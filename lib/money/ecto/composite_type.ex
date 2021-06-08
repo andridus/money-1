@@ -1,62 +1,116 @@
 if Code.ensure_loaded?(Ecto.Type) do
   defmodule Money.Ecto.Composite.Type do
     @moduledoc """
-    Provides a type for Ecto to store a multi-currency price.
-    The underlying data type should be an user-defined Postgres composite type `:money_with_currency`.
-
-    ## Migration
-
-        execute "CREATE TYPE public.money_with_currency AS (amount integer, currency char(3))"
-
-        create table(:my_table) do
-          add :price, :money_with_currency
-        end
-
-    ## Schema
-
-        schema "my_table" do
-          field :price, Money.Ecto.Composite.Type
-        end
-
+    Implements the Ecto.Type behaviour for a user-defined Postgres composite type
+    called `:money_with_currency`.
+    This is the preferred option for Postgres database since the serialized money
+    amount is stored as a decimal number,
     """
 
-    if macro_exported?(Ecto.Type, :__using__, 1) do
-      use Ecto.Type
-    else
-      @behaviour Ecto.Type
+    use Ecto.ParameterizedType
+
+    def type(_params) do
+      :money_with_currency
     end
 
-    @spec type() :: :money_with_currency
-    def type, do: :money_with_currency
-
-    @spec load({integer(), atom() | String.t()}) :: {:ok, Money.t()}
-    def load({amount, currency}) do
-      {:ok, Money.new(amount, currency)}
+    def cast_type(opts \\ []) do
+      Ecto.ParameterizedType.init(__MODULE__, opts)
     end
 
-    @spec dump(any()) :: :error | {:ok, {integer(), String.t()}}
-    def dump(%Money{} = money), do: {:ok, {to_string(money.amount), to_string(money.currency)}}
-    def dump(_), do: :error
+    def init(opts) do
+      opts
+      |> Keyword.delete(:field)
+      |> Keyword.delete(:schema)
+      |> Keyword.delete(:default)
+    end
 
-    @spec cast(Money.t() | {integer(), String.t()} | map() | any()) :: :error | {:ok, Money.t()}
-    def cast(%Money{} = money) do
+    # When loading from the database
+    def load(tuple, loader \\ nil, params \\ [])
+
+    def load(nil, _loader, _params) do
+      {:ok, nil}
+    end
+
+    def load({currency, amount}, _loader, params) do
+      with {:ok, currency_code} <- Money.validate_currency(currency) do
+        {:ok, Money.new(currency_code, amount, params)}
+      else
+        _ -> :error
+      end
+    end
+
+    # Dumping to the database.  We make the assumption that
+    # since we are dumping from %Money{} structs that the
+    # data is ok
+    def dump(money, dumper \\ nil, params \\ [])
+
+    def dump(%Money{} = money, _dumper, _params) do
+      {:ok, {to_string(money.currency), money.amount}}
+    end
+
+    def dump(nil, _, _) do
+      {:ok, nil}
+    end
+
+    def dump(_, _, _) do
+      :error
+    end
+
+    # Casting in changesets
+    def cast(money, params \\ [])
+
+    def cast(nil, _params) do
+      {:ok, nil}
+    end
+
+    def cast(%Money{} = money, _params) do
       {:ok, money}
     end
 
-    def cast({amount, currency}) when is_integer(amount) and (is_binary(currency) or is_atom(currency)) do
-      {:ok, Money.new(amount, currency)}
+    def cast(%{"currency" => _, "amount" => ""}, _params) do
+      {:ok, nil}
     end
 
-    def cast(%{"amount" => amount, "currency" => currency})
-        when (is_binary(currency) or is_atom(currency)) do
-      {:ok, Money.new(amount, currency)}
+    def cast(%{"currency" => currency, "amount" => amount}, params)
+        when (is_binary(currency) or is_atom(currency)) and is_integer(amount) do
+      with %{__struct__: Money} = money <- Money.new(currency, amount, params) do
+        {:ok, money}
+      else
+        {:error, {_, message}} -> {:error, message: message}
+      end
     end
 
-    def cast(%{amount: amount, currency: currency})
-        when is_integer(amount) and (is_binary(currency) or is_atom(currency)) do
-      {:ok, Money.new(amount, currency)}
+    def cast(%{"currency" => currency, "amount" => amount}, params)
+        when (is_binary(currency) or is_atom(currency)) and is_binary(amount) do
+      with %{__struct__: Money} = money <- Money.new(currency, amount, params) do
+        {:ok, money}
+      else
+        {:error, {_, message}} -> {:error, message: message}
+      end
     end
 
-    def cast(_), do: :error
+    def cast(%{"currency" => currency, "amount" => %Decimal{} = amount}, params)
+        when is_binary(currency) or is_atom(currency) do
+      with %{__struct__: Money} = money <- Money.new(currency, amount, params) do
+        {:ok, money}
+      else
+        {:error, {_, message}} -> {:error, message: message}
+      end
+    end
+
+    def cast(%{currency: currency, amount: amount}, params) do
+      cast(%{"currency" => currency, "amount" => amount}, params)
+    end
+
+    def cast(string, params) when is_binary(string) do
+      case Money.parse(string, params) do
+        {:error,{_, message}} -> {:error, message: message}
+        money -> {:ok, money}
+      end
+    end
+
+    def cast(_money, _params) do
+      :error
+    end
   end
 end
