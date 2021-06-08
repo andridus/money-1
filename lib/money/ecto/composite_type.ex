@@ -35,7 +35,7 @@ if Code.ensure_loaded?(Ecto.Type) do
     end
 
     @spec dump(any()) :: :error | {:ok, {integer(), String.t()}}
-    def dump(%Money{} = money), do: {:ok, {money.amount, to_string(money.currency)}}
+    def dump(%Money{} = money), do: {:ok, {money.amount, money.currency}}
     def dump(_), do: :error
 
     @spec cast(Money.t() | {integer(), String.t()} | map() | any()) :: :error | {:ok, Money.t()}
